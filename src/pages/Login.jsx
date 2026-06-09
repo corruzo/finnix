@@ -1,23 +1,159 @@
-import { useState } from 'react';
-import { motion } from 'framer-motion';
+import { useState, useRef, useCallback } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
-import { Eye, EyeOff, Mail, Lock, ArrowLeft, AlertCircle } from 'lucide-react';
+import { Eye, EyeOff, Mail, Lock, ArrowLeft, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { auth, googleProvider, isMockMode } from '../services/firebase';
 import { signInWithEmailAndPassword, signInWithPopup } from 'firebase/auth';
 import { useAuthStore } from '../store/useAuthStore';
 
+/* ── Mapeo de errores Firebase Auth ─────────────────────── */
+const AUTH_ERRORS = {
+  'auth/user-not-found':            'No existe una cuenta con este correo electrónico.',
+  'auth/wrong-password':            'Contraseña incorrecta. Verifica e inténtalo de nuevo.',
+  'auth/invalid-credential':        'Credenciales inválidas. Verifica tu correo y contraseña.',
+  'auth/invalid-email':             'El formato del correo electrónico es inválido.',
+  'auth/user-disabled':             'Esta cuenta ha sido deshabilitada. Contacta soporte.',
+  'auth/too-many-requests':         'Demasiados intentos fallidos. Espera unos minutos antes de reintentar.',
+  'auth/network-request-failed':    'Sin conexión a internet. Verifica tu red e inténtalo de nuevo.',
+  'auth/popup-closed-by-user':      'El inicio de sesión fue cancelado.',
+  'auth/cancelled-popup-request':   'El inicio de sesión fue cancelado.',
+  'auth/popup-blocked':             'El navegador bloqueó la ventana emergente. Permite las ventanas emergentes e inténtalo de nuevo.',
+  'auth/operation-not-allowed':     'Este método de inicio de sesión no está habilitado.',
+  'auth/internal-error':            'Error interno del servidor. Inténtalo de nuevo.',
+};
+
+function getAuthErrorMessage(code) {
+  return AUTH_ERRORS[code] || 'Ocurrió un error inesperado. Inténtalo de nuevo.';
+}
+
+/* ── Campo de entrada con icono ─────────────────────────── */
+function InputField({ icon: Icon, type, placeholder, value, onChange, onFocus, onBlur, focused, fieldKey, rightElement, autoComplete }) {
+  const isFocused = focused === fieldKey;
+  return (
+    <div style={{ position: 'relative' }}>
+      <Icon
+        size={15}
+        color={isFocused ? '#7c5cfc' : '#3a3a52'}
+        style={{
+          position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)',
+          transition: 'color 0.2s', zIndex: 1, pointerEvents: 'none',
+        }}
+      />
+      <input
+        type={type}
+        placeholder={placeholder}
+        value={value}
+        onChange={onChange}
+        onFocus={() => onFocus(fieldKey)}
+        onBlur={() => onBlur('')}
+        autoComplete={autoComplete}
+        style={{
+          width: '100%', height: 52, borderRadius: 15,
+          background: isFocused ? 'rgba(124,92,252,0.06)' : '#13131e',
+          border: `1px solid ${isFocused ? 'rgba(124,92,252,0.55)' : 'rgba(255,255,255,0.065)'}`,
+          color: '#ededfc', fontSize: 14.5,
+          fontFamily: "'DM Sans', sans-serif",
+          paddingLeft: 46,
+          paddingRight: rightElement ? 48 : 16,
+          outline: 'none',
+          transition: 'border-color 0.2s, background 0.2s, box-shadow 0.2s',
+          boxSizing: 'border-box',
+          boxShadow: isFocused ? '0 0 0 3px rgba(124,92,252,0.12)' : 'none',
+        }}
+      />
+      {rightElement}
+    </div>
+  );
+}
+
+/* ── Botón Google ───────────────────────────────────────── */
+function SocialBtn({ onClick, disabled, children }) {
+  return (
+    <motion.button
+      whileTap={{ scale: 0.95 }}
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        flex: 1, height: 50, borderRadius: 13,
+        background: 'rgba(255,255,255,0.035)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        color: '#9090b0', cursor: disabled ? 'not-allowed' : 'pointer',
+        fontFamily: "'Plus Jakarta Sans',sans-serif",
+        fontWeight: 600, fontSize: 13.5,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+        transition: 'background 0.2s, border-color 0.2s',
+      }}
+    >
+      {children}
+    </motion.button>
+  );
+}
+
+/* ── Icono Google SVG ───────────────────────────────────── */
+function GoogleIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24">
+      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+    </svg>
+  );
+}
+
+/* ── Login Page ─────────────────────────────────────────── */
 export default function LoginPage() {
   const navigate = useNavigate();
   const [showPass, setShowPass] = useState(false);
   const [form, setForm] = useState({ email: '', password: '' });
   const [focused, setFocused] = useState('');
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
   const [loading, setLoading] = useState(false);
+  const [shakeKey, setShakeKey] = useState(0);
+  const [failCount, setFailCount] = useState(0);
+  const [blocked, setBlocked] = useState(false);
+  const blockTimerRef = useRef(null);
   const { setUser } = useAuthStore();
 
+  const triggerShake = useCallback(() => setShakeKey(k => k + 1), []);
+
+  /* Limpiar error al escribir */
+  const handleChange = (field) => (e) => {
+    setForm(p => ({ ...p, [field]: e.target.value }));
+    if (error) setError('');
+  };
+
+  /* Rate limiting local: bloquear 30s tras 4 fallos */
+  const handleFail = useCallback((msg) => {
+    setError(msg);
+    triggerShake();
+    const newCount = failCount + 1;
+    setFailCount(newCount);
+    if (newCount >= 4) {
+      setBlocked(true);
+      setError('Demasiados intentos. Espera 30 segundos antes de reintentar.');
+      blockTimerRef.current = setTimeout(() => {
+        setBlocked(false);
+        setFailCount(0);
+        setError('');
+      }, 30000);
+    }
+  }, [failCount, triggerShake]);
+
+  const validate = () => {
+    if (!form.email.trim()) return 'El correo electrónico es obligatorio.';
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.email)) return 'El formato del correo es inválido.';
+    if (!form.password) return 'La contraseña es obligatoria.';
+    if (form.password.length < 6) return 'La contraseña debe tener al menos 6 caracteres.';
+    return null;
+  };
+
   const handleLogin = async () => {
-    if (!form.email || !form.password) return setError('Llena todos los campos');
-    
+    if (blocked || loading) return;
+    const validationError = validate();
+    if (validationError) { handleFail(validationError); return; }
+
     setError('');
     setLoading(true);
 
@@ -33,17 +169,18 @@ export default function LoginPage() {
     }
 
     try {
-      await signInWithEmailAndPassword(auth, form.email, form.password);
-      navigate('/dashboard');
+      await signInWithEmailAndPassword(auth, form.email.trim().toLowerCase(), form.password);
+      setSuccess('¡Acceso verificado! Redirigiendo…');
+      setTimeout(() => navigate('/dashboard'), 600);
     } catch (err) {
-      console.error(err);
-      setError('Credenciales inválidas o correo no encontrado');
+      handleFail(getAuthErrorMessage(err.code));
     } finally {
       setLoading(false);
     }
   };
 
   const handleGoogleAuth = async () => {
+    if (blocked || loading) return;
     setError('');
     setLoading(true);
 
@@ -60,65 +197,43 @@ export default function LoginPage() {
 
     try {
       await signInWithPopup(auth, googleProvider);
-      navigate('/dashboard');
+      setSuccess('¡Acceso verificado! Redirigiendo…');
+      setTimeout(() => navigate('/dashboard'), 600);
     } catch (err) {
-      console.error(err);
-      setError('No se pudo iniciar sesión con Google');
+      handleFail(getAuthErrorMessage(err.code));
     } finally {
       setLoading(false);
     }
   };
 
-  const inputStyle = (field) => ({
-    width: '100%',
-    height: 52,
-    borderRadius: 16,
-    background: '#1e1e2e',
-    border: `1px solid ${focused === field ? '#7c5cfc' : 'rgba(255,255,255,0.07)'}`,
-    color: '#f1f0ff',
-    fontSize: 15,
-    fontFamily: "'DM Sans', sans-serif",
-    paddingLeft: 48,
-    paddingRight: field === 'password' ? 48 : 16,
-    outline: 'none',
-    transition: 'border-color 0.2s ease',
-    boxSizing: 'border-box',
-    boxShadow: focused === field ? '0 0 0 3px rgba(124,92,252,0.15)' : 'none',
-  });
+  const handleKeyDown = (e) => { if (e.key === 'Enter') handleLogin(); };
 
   return (
     <div
-      className="app-shell flex flex-col relative overflow-hidden pb-safe"
-      style={{ height: '100dvh', background: '#0d0d14', fontFamily: "'DM Sans', sans-serif" }}
+      className="app-shell flex flex-col relative overflow-hidden"
+      style={{ height: '100dvh', background: '#07070f', fontFamily: "'DM Sans', sans-serif" }}
     >
-      <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&family=DM+Sans:wght@400;500;600&display=swap');
-        ::placeholder { color: #4a4a6a; }
-      `}</style>
-
-      {/* Header arc gradient */}
+      {/* Fondo: arco superior */}
       <div style={{
-        position: 'absolute', top: 0, left: 0, right: 0, height: 180,
-        background: 'linear-gradient(135deg, #4c3bc4 0%, #7c5cfc 55%, #a855f7 100%)',
-        borderRadius: '0 0 40px 40px',
-        zIndex: 0,
+        position: 'absolute', top: 0, left: 0, right: 0, height: 190,
+        background: 'linear-gradient(148deg, #1e1060 0%, #3d2aad 30%, #6b47e8 60%, #8a5cf7 100%)',
+        borderRadius: '0 0 40px 40px', zIndex: 0,
       }} />
       <div style={{
-        position: 'absolute', top: 0, left: 0, right: 0, height: 180,
-        background: 'linear-gradient(to bottom, transparent 60%, #0d0d14 100%)',
-        borderRadius: '0 0 40px 40px',
-        zIndex: 1,
+        position: 'absolute', top: 0, left: 0, right: 0, height: 190,
+        background: 'linear-gradient(to bottom, transparent 55%, #07070f 100%)',
+        borderRadius: '0 0 40px 40px', zIndex: 1,
       }} />
 
-      {/* Glow */}
+      {/* Glow central */}
       <div className="absolute pointer-events-none" style={{
-        top: '30%', left: '50%', transform: 'translateX(-50%)',
-        width: 280, height: 280, borderRadius: '50%',
-        background: 'radial-gradient(ellipse, rgba(124,92,252,0.12) 0%, transparent 70%)',
+        top: '28%', left: '50%', transform: 'translateX(-50%)',
+        width: 300, height: 300, borderRadius: '50%',
+        background: 'radial-gradient(ellipse, rgba(124,92,252,0.1) 0%, transparent 70%)',
         zIndex: 0,
       }} />
 
-      {/* Back button */}
+      {/* Botón volver */}
       <motion.button
         initial={{ opacity: 0, x: -10 }}
         animate={{ opacity: 1, x: 0 }}
@@ -127,12 +242,13 @@ export default function LoginPage() {
         onClick={() => navigate(-1)}
         style={{
           position: 'absolute', top: 52, left: 20, zIndex: 10,
-          width: 40, height: 40, borderRadius: 12,
-          background: 'rgba(255,255,255,0.12)', border: '1px solid rgba(255,255,255,0.1)',
+          width: 40, height: 40, borderRadius: 13,
+          background: 'rgba(255,255,255,0.1)', border: '1px solid rgba(255,255,255,0.1)',
           display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer',
         }}
+        aria-label="Volver"
       >
-        <ArrowLeft size={18} color="#fff" />
+        <ArrowLeft size={17} color="#fff" />
       </motion.button>
 
       {/* Logo */}
@@ -142,169 +258,172 @@ export default function LoginPage() {
         transition={{ type: 'spring', stiffness: 220, damping: 18, delay: 0.15 }}
         style={{
           zIndex: 10, alignSelf: 'center', marginTop: 44,
-          width: 60, height: 60, borderRadius: 20,
-          background: 'linear-gradient(135deg, #4c3bc4 0%, #7c5cfc 55%, #a855f7 100%)',
+          width: 58, height: 58, borderRadius: 20,
+          background: 'linear-gradient(148deg, #3d2aad 0%, #6b47e8 45%, #9d7ffe 100%)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          boxShadow: '0 0 24px rgba(124,92,252,0.5)',
-          position: 'relative',
+          boxShadow: '0 0 28px rgba(124,92,252,0.55)', position: 'relative',
         }}
       >
-        <span style={{
-          position: 'absolute', inset: 0, borderRadius: 20,
-          background: 'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, transparent 60%)',
-        }} />
-        <span style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 26, color: '#fff' }}>F</span>
+        <span style={{ position: 'absolute', inset: 0, borderRadius: 20, background: 'linear-gradient(148deg, rgba(255,255,255,0.2) 0%, transparent 55%)' }} />
+        <span style={{ fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 25, color: '#fff', position: 'relative' }}>F</span>
       </motion.div>
 
-      {/* Form area */}
+      {/* Formulario */}
       <motion.div
-        initial={{ y: 30, opacity: 0 }}
+        initial={{ y: 28, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
         transition={{ ease: 'easeOut', duration: 0.5, delay: 0.25 }}
-        style={{ zIndex: 10, padding: '24px 24px 0', flex: 1, display: 'flex', flexDirection: 'column' }}
+        style={{ zIndex: 10, padding: '22px 22px 0', flex: 1, display: 'flex', flexDirection: 'column', overflowY: 'auto' }}
+        onKeyDown={handleKeyDown}
       >
         <h1 style={{
-          fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 26,
-          color: '#f1f0ff', margin: '0 0 6px', letterSpacing: -0.6,
+          fontFamily: "'Plus Jakarta Sans',sans-serif", fontWeight: 800, fontSize: 25,
+          color: '#ededfc', margin: '0 0 5px', letterSpacing: -0.7,
         }}>
           Bienvenido de vuelta
         </h1>
-        <p style={{ fontSize: 14, color: '#8b8ba7', margin: '0 0 28px' }}>
+        <p style={{ fontSize: 13.5, color: '#5e5e7a', margin: '0 0 24px', fontWeight: 400 }}>
           Ingresa a tu cuenta para continuar
         </p>
 
-        {error && (
-          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} style={{
-            background: 'rgba(244,63,94,0.1)', border: '1px solid rgba(244,63,94,0.2)', color: '#f43f5e',
-            padding: '12px 16px', borderRadius: 12, fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 20
-          }}>
-            <AlertCircle size={16} /> {error}
-          </motion.div>
-        )}
+        {/* Banner de error */}
+        <AnimatePresence mode="wait">
+          {error && (
+            <motion.div
+              key={`error-${shakeKey}`}
+              initial={{ opacity: 0, y: -8, height: 0 }}
+              animate={{ opacity: 1, y: 0, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className={`error-banner shake`}
+              style={{ marginBottom: 16 }}
+            >
+              <AlertCircle size={15} style={{ flexShrink: 0 }} />
+              <span>{error}</span>
+            </motion.div>
+          )}
+          {success && (
+            <motion.div
+              key="success"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="success-banner"
+              style={{ marginBottom: 16 }}
+            >
+              <CheckCircle2 size={15} style={{ flexShrink: 0 }} />
+              <span>{success}</span>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {/* Email */}
-        <div style={{ position: 'relative', marginBottom: 14 }}>
-          <Mail size={16} color={focused === 'email' ? '#7c5cfc' : '#4a4a6a'}
-            style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', transition: 'color 0.2s', zIndex: 1 }} />
-          <input
+        {/* Correo */}
+        <div style={{ marginBottom: 12 }}>
+          <InputField
+            icon={Mail}
             type="email"
-            placeholder="tu@correo.com"
+            placeholder="correo@ejemplo.com"
             value={form.email}
-            onChange={e => setForm(p => ({ ...p, email: e.target.value }))}
-            onFocus={() => setFocused('email')}
-            onBlur={() => setFocused('')}
-            style={inputStyle('email')}
+            onChange={handleChange('email')}
+            onFocus={setFocused}
+            onBlur={setFocused}
+            focused={focused}
+            fieldKey="email"
+            autoComplete="email"
           />
         </div>
 
-        {/* Password */}
-        <div style={{ position: 'relative', marginBottom: 10 }}>
-          <Lock size={16} color={focused === 'password' ? '#7c5cfc' : '#4a4a6a'}
-            style={{ position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)', transition: 'color 0.2s', zIndex: 1 }} />
-          <input
+        {/* Contraseña */}
+        <div style={{ marginBottom: 8 }}>
+          <InputField
+            icon={Lock}
             type={showPass ? 'text' : 'password'}
             placeholder="Contraseña"
             value={form.password}
-            onChange={e => setForm(p => ({ ...p, password: e.target.value }))}
-            onFocus={() => setFocused('password')}
-            onBlur={() => setFocused('')}
-            style={inputStyle('password')}
+            onChange={handleChange('password')}
+            onFocus={setFocused}
+            onBlur={setFocused}
+            focused={focused}
+            fieldKey="password"
+            autoComplete="current-password"
+            rightElement={
+              <button
+                onClick={() => setShowPass(v => !v)}
+                tabIndex={-1}
+                style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: '#3a3a52' }}
+                aria-label={showPass ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+              >
+                {showPass ? <EyeOff size={15} /> : <Eye size={15} />}
+              </button>
+            }
           />
-          <button
-            onClick={() => setShowPass(v => !v)}
-            style={{ position: 'absolute', right: 14, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 4 }}
-          >
-            {showPass ? <EyeOff size={16} color="#4a4a6a" /> : <Eye size={16} color="#4a4a6a" />}
-          </button>
         </div>
 
-        {/* Forgot */}
-        <div style={{ textAlign: 'right', marginBottom: 28 }}>
+        {/* Olvidé contraseña */}
+        <div style={{ textAlign: 'right', marginBottom: 24 }}>
           <button
             onClick={() => navigate('/forgot')}
-            style={{ background: 'none', border: 'none', color: '#7c5cfc', fontSize: 13, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', color: '#7c5cfc', fontSize: 12.5, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer', fontWeight: 600 }}
           >
             ¿Olvidaste tu contraseña?
           </button>
         </div>
 
-        {/* Login button */}
+        {/* Botón ingresar */}
         <motion.button
-          whileTap={!loading ? { scale: 0.95 } : {}}
-          whileHover={!loading ? { filter: 'brightness(1.1)' } : {}}
+          whileTap={!loading && !blocked ? { scale: 0.96 } : {}}
           onClick={handleLogin}
-          disabled={loading}
+          disabled={loading || blocked}
           style={{
-            width: '100%', height: 56, borderRadius: 100,
-            background: 'linear-gradient(135deg, #7c5cfc 0%, #4f46e5 100%)',
-            border: 'none', color: '#fff',
+            width: '100%', height: 54, borderRadius: 100,
+            background: blocked
+              ? 'rgba(255,255,255,0.05)'
+              : 'linear-gradient(135deg, #8b6dfd 0%, #5b4ee5 50%, #4338ca 100%)',
+            border: 'none', color: blocked ? '#3a3a52' : '#fff',
             fontFamily: "'Plus Jakarta Sans',sans-serif",
-            fontWeight: 700, fontSize: 16, letterSpacing: -0.2,
-            cursor: loading ? 'not-allowed' : 'pointer', position: 'relative', overflow: 'hidden',
-            boxShadow: '0 4px 24px rgba(124,92,252,0.4)',
-            marginBottom: 20,
+            fontWeight: 700, fontSize: 15.5, letterSpacing: -0.2,
+            cursor: loading || blocked ? 'not-allowed' : 'pointer',
+            position: 'relative', overflow: 'hidden',
+            boxShadow: blocked ? 'none' : '0 4px 28px rgba(124,92,252,0.42), inset 0 1px 0 rgba(255,255,255,0.15)',
+            marginBottom: 18, transition: 'all 0.3s',
           }}
         >
-          <span style={{ position: 'absolute', inset: '0 0 50% 0', background: 'rgba(255,255,255,0.09)', borderRadius: '100px 100px 0 0' }} />
-          {loading ? 'Iniciando...' : 'Ingresar'}
+          {!blocked && !loading && <span style={{ position: 'absolute', inset: '0 0 50% 0', background: 'rgba(255,255,255,0.08)', borderRadius: '100px 100px 0 0' }} />}
+          {loading ? (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 8, justifyContent: 'center' }}>
+              <span className="spinner" style={{ width: 16, height: 16, borderWidth: 2 }} />
+              Verificando…
+            </span>
+          ) : blocked ? 'Espera 30 segundos…' : 'Ingresar a Finnix'}
         </motion.button>
 
         {/* Divider */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
-          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.07)' }} />
-          <span style={{ fontSize: 12, color: '#4a4a6a' }}>o continúa con</span>
-          <div style={{ flex: 1, height: 1, background: 'rgba(255,255,255,0.07)' }} />
+        <div className="divider" style={{ marginBottom: 16 }}>
+          <span style={{ fontSize: 11.5, color: '#3a3a52', fontFamily: "'DM Sans',sans-serif" }}>o continúa con</span>
         </div>
 
         {/* Social buttons */}
-        <div style={{ display: 'flex', gap: 12, marginBottom: 28 }}>
-          <motion.button
-            whileTap={{ scale: 0.95 }}
-            onClick={handleGoogleAuth}
-            disabled={loading}
-            style={{
-              flex: 1, height: 52, borderRadius: 16,
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: '#c4c4e0', cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: "'Plus Jakarta Sans',sans-serif",
-              fontWeight: 600, fontSize: 14,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            }}
-          >
-            <span style={{ fontSize: 16 }}>G</span> Google
-          </motion.button>
-
-          <motion.button
-            whileTap={{ scale: 0.95 }}
-            disabled={loading}
-            style={{
-              flex: 1, height: 52, borderRadius: 16,
-              background: 'rgba(255,255,255,0.04)',
-              border: '1px solid rgba(255,255,255,0.08)',
-              color: '#c4c4e0', cursor: loading ? 'not-allowed' : 'pointer',
-              fontFamily: "'Plus Jakarta Sans',sans-serif",
-              fontWeight: 600, fontSize: 14,
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
-            }}
-          >
-            Apple
-          </motion.button>
+        <div style={{ display: 'flex', gap: 10, marginBottom: 24 }}>
+          <SocialBtn onClick={handleGoogleAuth} disabled={loading || blocked}>
+            <GoogleIcon /> Google
+          </SocialBtn>
+          <SocialBtn disabled={true}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98l-.09.06c-.22.15-2.19 1.28-2.17 3.8.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.84M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+            </svg>
+            <span style={{ fontSize: 10, opacity: 0.5 }}>Próximamente</span>
+          </SocialBtn>
         </div>
 
-        {/* Sign up link */}
-        <p style={{ textAlign: 'center', fontSize: 14, color: '#8b8ba7', margin: 0 }}>
+        {/* Link registro */}
+        <p style={{ textAlign: 'center', fontSize: 13.5, color: '#5e5e7a', margin: '0 0 20px' }}>
           ¿No tienes cuenta?{' '}
           <button
             onClick={() => navigate('/signup')}
-            style={{ background: 'none', border: 'none', color: '#7c5cfc', fontWeight: 600, fontSize: 14, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer' }}
+            style={{ background: 'none', border: 'none', color: '#7c5cfc', fontWeight: 700, fontSize: 13.5, fontFamily: "'DM Sans',sans-serif", cursor: 'pointer' }}
           >
-            Regístrate
+            Regístrate gratis
           </button>
         </p>
       </motion.div>
-
-      <div style={{ height: 32 }} />
     </div>
   );
 }

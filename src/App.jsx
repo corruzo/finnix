@@ -1,14 +1,16 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { BrowserRouter, Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { onAuthStateChanged } from 'firebase/auth';
 import { auth, isMockMode } from './services/firebase';
 import { useAuthStore } from './store/useAuthStore';
+import { useFinanceStore } from './store/useFinanceStore';
 
 import LandingPage from './pages/LandingPage';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
 import Dashboard from './pages/Dashboard';
+import DynamicIsland from './components/DynamicIsland';
 import './index.css';
 
 // Layout transitions for routes
@@ -49,7 +51,13 @@ function AnimatedRoutes() {
 
 export default function App() {
   const { setUser, setLoading } = useAuthStore();
+  const user = useAuthStore(s => s.user);
+  const subscribeRates = useFinanceStore(s => s.subscribeRates);
+  const subscribeUserData = useFinanceStore(s => s.subscribeUserData);
+  const unsubRatesRef = useRef(null);
+  const unsubUserRef = useRef(null);
 
+  // Auth listener
   useEffect(() => {
     if (isMockMode) {
       const stored = localStorage.getItem('finnix_mock_user');
@@ -64,10 +72,41 @@ export default function App() {
     return () => unsubscribe();
   }, [setUser, setLoading]);
 
+  // Suscripción a tasas de cambio y datos de usuario — se activa al autenticarse
+  useEffect(() => {
+    if (!user) {
+      // Limpiar suscripción al hacer logout
+      if (unsubRatesRef.current) {
+        unsubRatesRef.current();
+        unsubRatesRef.current = null;
+      }
+      if (unsubUserRef.current) {
+        unsubUserRef.current();
+        unsubUserRef.current = null;
+      }
+      return;
+    }
+    unsubRatesRef.current = subscribeRates();
+    unsubUserRef.current = subscribeUserData(user.uid);
+    
+    return () => {
+      if (unsubRatesRef.current) {
+        unsubRatesRef.current();
+        unsubRatesRef.current = null;
+      }
+      if (unsubUserRef.current) {
+        unsubUserRef.current();
+        unsubUserRef.current = null;
+      }
+    };
+  }, [user, subscribeRates, subscribeUserData]);
+
   return (
-    <BrowserRouter>
-      <AnimatedRoutes />
-    </BrowserRouter>
+    <>
+      <DynamicIsland />
+      <BrowserRouter>
+        <AnimatedRoutes />
+      </BrowserRouter>
+    </>
   );
 }
-

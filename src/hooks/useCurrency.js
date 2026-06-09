@@ -1,12 +1,12 @@
-import { useState, useCallback } from 'react';
-import { useApp } from '../context/AppContext';
+import { useCallback } from 'react';
+import { useFinanceStore } from '../store/useFinanceStore';
 
 /**
- * Hook para conversión de monedas usando las tasas del contexto global.
+ * Hook para conversión de monedas usando las tasas del store global.
  * Expone convert(amount, from, to) y la lista de monedas disponibles.
  */
 export function useCurrency() {
-  const { rates, CURRENCIES } = useApp();
+  const { rates, CURRENCIES } = useFinanceStore();
 
   const convert = useCallback((amount, from, to) => {
     if (from === to) return amount;
@@ -14,16 +14,16 @@ export function useCurrency() {
     // Primero a USD, luego a la moneda destino
     let usdAmount;
     switch (from) {
-      case 'VES':  usdAmount = amount / rates.paralelo; break;
-      case 'EUR':  usdAmount = amount * rates.eur_usd; break;
+      case 'VES':  usdAmount = rates.binance_usdt ? amount / rates.binance_usdt : (rates.bcv_usd ? amount / rates.bcv_usd : amount); break;
+      case 'EUR':  usdAmount = (rates.bcv_usd && rates.bcv_eur) ? amount * (rates.bcv_eur / rates.bcv_usd) : amount; break;
       case 'USDT':
       case 'USD':  usdAmount = amount; break;
       default:     usdAmount = amount;
     }
 
     switch (to) {
-      case 'VES':  return usdAmount * rates.paralelo;
-      case 'EUR':  return usdAmount / rates.eur_usd;
+      case 'VES':  return rates.binance_usdt ? usdAmount * rates.binance_usdt : (rates.bcv_usd ? usdAmount * rates.bcv_usd : usdAmount);
+      case 'EUR':  return (rates.bcv_usd && rates.bcv_eur) ? usdAmount / (rates.bcv_eur / rates.bcv_usd) : usdAmount;
       case 'USDT':
       case 'USD':  return usdAmount;
       default:     return usdAmount;

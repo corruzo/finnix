@@ -1,7 +1,8 @@
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
+import { subscribeToRates, refreshRatesIfStale } from '../services/ratesService';
+import { subscribeAccounts, subscribeTransactions, subscribeUserPreferences } from '../services/financeService';
 
-// ── Monedas soportadas ───────────────────────────────────────
 const CURRENCIES = {
   VES:  { symbol: 'Bs.',  name: 'Bolívares',  decimals: 2 },
   USD:  { symbol: '$',    name: 'Dólares',    decimals: 2 },
@@ -9,149 +10,101 @@ const CURRENCIES = {
   USDT: { symbol: '₮',   name: 'USDT',       decimals: 2 },
 };
 
-// ── Tasas de cambio por defecto ──────────────────────────────
-const DEFAULT_RATES = {
-  bcv:        36.50,
-  paralelo:   38.20,
-  eur_usd:    1.08,
-  lastUpdated: null,
-};
-
-// ── Store central de finanzas ────────────────────────────────
 export const useFinanceStore = create(
   persist(
     (set, get) => ({
-      // ── Estado ──────────────────────────────────────────────
-      accounts:       [],        // Cuentas/activos del usuario (vacío por defecto)
-      transactions:   [],        // Historial de movimientos (vacío por defecto)
-      rates:          DEFAULT_RATES,
+      accounts:       [],
+      transactions:   [],
+      preferredRate:  'bcv_usd', // 'bcv_usd' | 'bcv_eur' | 'binance_usdt'
+      rates: {
+        bcv_usd:      null,
+        bcv_eur:      null,
+        binance_usdt: null,
+        lastUpdated:  null,
+      },
       balanceVisible: true,
       CURRENCIES,
 
-      // ── Visibilidad de saldo ─────────────────────────────────
-      toggleBalance: () =>
-        set(s => ({ balanceVisible: !s.balanceVisible })),
+      toggleBalance: () => set(s => ({ balanceVisible: !s.balanceVisible })),
+      setPreferredRate: (rate) => set({ preferredRate: rate }),
 
-      // ── CUENTAS ──────────────────────────────────────────────
+      // ── ESTADO CACHE FIRESTORE ──────────────────────────────────────
+      setAccounts: (accounts) => set({ accounts }),
+      setTransactions: (transactions) => set({ transactions }),
 
-      /** Agrega una cuenta nueva con todos sus campos */
-      addAccount: (account) =>
-        set(s => ({
-          accounts: [
-            ...s.accounts,
-            {
-              // ── Identificadores ──────────────────────────────
-              id:           `ACC-${Date.now().toString(36).toUpperCase()}`,
-              userId:       account.userId       || null,   // UID del propietario (Firebase Auth)
-              // ── Datos de cuenta ──────────────────────────────
-              name:         account.name,
-              numeroCuenta: account.numeroCuenta || null,   // número de cuenta (opcional)
-              type:         account.type,
-              currency:     account.currency,
-              balance:      account.balance,
-              color:        account.color,
-              icon:         account.icon         || '💼',
-              // ── Metadata ─────────────────────────────────────
-              sparkline:    [50, 50, 50, 50, 50, 50, 50],
-              createdAt:    new Date().toISOString(),
-              updatedAt:    new Date().toISOString(),
-            },
-          ],
-        })),
-
-      /** Actualiza los datos de una cuenta existente */
-      updateAccount: (id, data) =>
-        set(s => ({
-          accounts: s.accounts.map(acc =>
-            acc.id === id ? { ...acc, ...data, updatedAt: new Date().toISOString() } : acc
-          ),
-        })),
-
-      /** Elimina una cuenta y todas sus transacciones asociadas */
-      removeAccount: (id) =>
-        set(s => ({
-          accounts:     s.accounts.filter(acc => acc.id !== id),
-          transactions: s.transactions.filter(tx => tx.accountId !== id),
-        })),
-
-      // ── TRANSACCIONES ─────────────────────────────────────────
-
-      /** Registra un movimiento y actualiza el saldo de la cuenta */
-      addTransaction: (tx) => {
-        const newTx = {
-          ...tx,
-          id:   `tx-${Date.now()}`,
-          date: new Date().toISOString(),
+      // ── SUSCRIPCIONES ───────────────────────────────────────────
+      subscribeUserData: (uid) => {
+        if (!uid) return () => {};
+        const unsubAcc = subscribeAccounts(uid, (accounts) => get().setAccounts(accounts));
+        const unsubTx = subscribeTransactions(uid, (transactions) => get().setTransactions(transactions));
+        const unsubPref = subscribeUserPreferences(uid, (prefs) => {
+          if (prefs?.preferredRate) {
+            get().setPreferredRate(prefs.preferredRate);
+          }
+        });
+        
+        return () => {
+          unsubAcc();
+          unsubTx();
+          unsubPref();
         };
-        set(s => ({
-          transactions: [newTx, ...s.transactions],
-          accounts: s.accounts.map(acc => {
-            if (acc.id !== tx.accountId) return acc;
-            const delta = tx.type === 'ingreso' ? tx.amount : -tx.amount;
-            return { ...acc, balance: acc.balance + delta };
-          }),
-        }));
       },
 
-      /** Elimina un movimiento y revierte el saldo de la cuenta */
-      removeTransaction: (id) => {
-        const { transactions } = get();
-        const tx = transactions.find(t => t.id === id);
-        if (!tx) return;
-        set(s => ({
-          transactions: s.transactions.filter(t => t.id !== id),
-          accounts: s.accounts.map(acc => {
-            if (acc.id !== tx.accountId) return acc;
-            // Revertir: si era ingreso restamos, si era egreso sumamos
-            const delta = tx.type === 'ingreso' ? -tx.amount : tx.amount;
-            return { ...acc, balance: acc.balance + delta };
-          }),
-        }));
+      updateRates: (newRates) => set(s => ({ rates: { ...s.rates, ...newRates } })),
+
+      subscribeRates: () => {
+        const { updateRates } = get();
+        const unsubscribe = subscribeToRates(updateRates);
+        // Ejecutar en background sin bloquear (fire and forget)
+        refreshRatesIfStale().catch(e => console.warn('[Finnix] Error refrescando tasas:', e));
+        return unsubscribe;
       },
 
-      // ── TASAS DE CAMBIO ───────────────────────────────────────
-
-      /** Actualiza las tasas de cambio */
-      updateRates: (newRates) =>
-        set(s => ({
-          rates: { ...s.rates, ...newRates, lastUpdated: new Date().toISOString() },
-        })),
-
-      // ── HELPERS DE CONVERSIÓN ─────────────────────────────────
-
-      /** Convierte cualquier monto a USD */
+      // ── CONVERSIÓN ──────────────────────────────────────────────
       toUSD: (amount, currency) => {
-        const { rates } = get();
+        const { rates, preferredRate } = get();
         switch (currency) {
-          case 'VES':  return amount / rates.paralelo;
-          case 'EUR':  return amount * rates.eur_usd;
+          case 'VES':
+            const selectedRate = rates[preferredRate];
+            // Si no hay tasa seleccionada cargada, devuelve 0 o asume 1 temporalmente, pero mejor intentar fallback seguro.
+            // Pero el requerimiento dicta usar estrictamente la tasa seleccionada.
+            if (selectedRate) return amount / selectedRate;
+            return amount; // Fallback si rates aún no carga
+          case 'EUR':
+            if (rates.bcv_usd && rates.bcv_eur) return amount * (rates.bcv_eur / rates.bcv_usd);
+            return amount;
           case 'USDT':
-          case 'USD':  return amount;
-          default:     return amount;
-        }
-      },
-
-      /** Convierte cualquier monto a VES (bolívares al paralelo) */
-      toVES: (amount, currency) => {
-        const { rates } = get();
-        switch (currency) {
           case 'USD':
-          case 'USDT': return amount * rates.paralelo;
-          case 'EUR':  return amount * rates.eur_usd * rates.paralelo;
-          case 'VES':  return amount;
-          default:     return amount;
+            return amount;
+          default:
+            return amount;
         }
       },
 
-      // ── CÁLCULOS AGREGADOS ────────────────────────────────────
+      toVES: (amount, currency) => {
+        const { rates, preferredRate } = get();
+        const selectedRate = rates[preferredRate];
+        switch (currency) {
+          case 'USD':   
+          case 'USDT':
+          case 'EUR':   
+            // Para todas las monedas extranjeras, convertirlas a USD y luego a VES usando la tasa preferida
+            // O más directo: si la moneda de destino es VES, y la de origen es USD/USDT/EUR, 
+            // usamos siempre la selectedRate como puente o directamente multiplicador.
+            // Pero para ser exactos: 1 USD = selectedRate VES.
+            const usdValue = get().toUSD(amount, currency);
+            return selectedRate ? usdValue * selectedRate : amount;
+          case 'VES':   return amount;
+          default:      return amount;
+        }
+      },
 
-      /** Patrimonio total del usuario convertido a USD */
+      // ── CÁLCULOS AGREGADOS ──────────────────────────────────────
       getTotalUSD: () => {
         const { accounts, toUSD } = get();
         return accounts.reduce((sum, acc) => sum + toUSD(acc.balance, acc.currency), 0);
       },
 
-      /** Ingresos y egresos del mes actual en USD */
       getMonthlyStats: () => {
         const { transactions, toUSD } = get();
         const now = new Date();
@@ -168,21 +121,15 @@ export const useFinanceStore = create(
         return { ingresos, egresos };
       },
 
-      /** Balance actualizado de una cuenta específica */
       getAccountBalance: (id) => {
         const { accounts } = get();
         return accounts.find(acc => acc.id === id)?.balance ?? 0;
       },
     }),
     {
-      name: 'finnix-store-v2',
-      // Persiste solo datos del usuario, no funciones ni catálogos
-      partialize: (s) => ({
-        accounts:       s.accounts,
-        transactions:   s.transactions,
-        rates:          s.rates,
-        balanceVisible: s.balanceVisible,
-      }),
+      name: 'finnix-storage',
+      partialize: (state) => ({ rates: state.rates, preferredRate: state.preferredRate }),
     }
   )
 );
+

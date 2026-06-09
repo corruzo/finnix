@@ -3,8 +3,11 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
 import { formatCurrency, truncate } from '../lib/utils';
 import { SiBitcoin, SiTether, SiPaypal } from 'react-icons/si';
-import { Building2, Wallet, Trash2, Edit2, ListOrdered } from 'lucide-react';
+import { Building2, Wallet, Trash2, Edit2, ListOrdered, Loader2 } from 'lucide-react';
+import { useAuthStore } from '../store/useAuthStore';
+import { useNotificationStore } from '../store/useNotificationStore';
 import { useFinanceStore } from '../store/useFinanceStore';
+import { deleteAccountData } from '../services/financeService';
 
 const ICON_MAP = {
   'binance': { icon: SiTether, color: 'icon-amber', size: 24 },
@@ -15,7 +18,10 @@ const ICON_MAP = {
 
 export default function AssetRow({ account, index, onAction }) {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { removeAccount } = useFinanceStore();
+  const [isDeleting, setIsDeleting] = useState(false);
+  const { user } = useAuthStore();
+  const { showNotification } = useNotificationStore();
+  const { toUSD, toVES } = useFinanceStore();
 
   const { name, balance, currency, type, sparkline, color } = account;
   const config = ICON_MAP[type] || { icon: Wallet, color: 'icon-violet', size: 22 };
@@ -25,6 +31,22 @@ export default function AssetRow({ account, index, onAction }) {
   const chartData = sparkline?.map((val, i) => ({ value: val, name: i })) || [];
   const isPositive = chartData.length > 0 && chartData[chartData.length - 1].value >= chartData[0].value;
   const strokeColor = isPositive ? 'var(--positive)' : 'var(--negative)';
+
+  const handleDelete = async () => {
+    if (!window.confirm('¿Eliminar esta cuenta y todos sus movimientos?')) return;
+    if (!user?.uid) return;
+    
+    setIsDeleting(true);
+    try {
+      await deleteAccountData(user.uid, account.id);
+      showNotification('Cuenta eliminada', '', 'success');
+    } catch (e) {
+      console.error(e);
+      showNotification('Error', 'No se pudo eliminar la cuenta.', 'error');
+    } finally {
+      setIsDeleting(false);
+    }
+  };
 
   return (
     <div className="flex flex-col mb-2">
@@ -67,7 +89,10 @@ export default function AssetRow({ account, index, onAction }) {
           {formatCurrency(balance, currency)}
         </div>
         <div className="font-dm text-[12px] text-text-secondary mt-0.5 tabular-nums">
-          ≈ {formatCurrency(balance, 'USD')}
+          ≈ {formatCurrency(
+            currency === 'VES' ? toUSD(balance, 'VES') : toVES(balance, currency),
+            currency === 'VES' ? 'USD' : 'VES'
+          )}
         </div>
       </div>
       </motion.div>
@@ -94,14 +119,12 @@ export default function AssetRow({ account, index, onAction }) {
                 <Edit2 size={14} /> Editar
               </button>
               <button 
-                onClick={() => {
-                  if(window.confirm('¿Eliminar esta cuenta y todos sus movimientos?')) {
-                    removeAccount(account.id);
-                  }
-                }}
+                onClick={handleDelete}
+                disabled={isDeleting}
                 className="flex-1 flex items-center justify-center gap-1.5 py-2 rounded-xl bg-negative/10 border border-negative/20 text-[12px] font-dm text-negative hover:bg-negative/20 transition-colors"
               >
-                <Trash2 size={14} /> Eliminar
+                {isDeleting ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />} 
+                {isDeleting ? 'Borrando' : 'Eliminar'}
               </button>
             </div>
           </motion.div>
